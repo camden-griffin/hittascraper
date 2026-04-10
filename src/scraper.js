@@ -22,6 +22,286 @@ function requestAbort() {
     _abortRequested = true;
 }
 
+function normalizeOrgNumber(raw) {
+    const org = (raw || "").toString().replace(/-/g, "").trim();
+    return /^\d{10}$/.test(org) ? org : "";
+}
+
+function detectCsvHeaderLike(line) {
+    const s = (line || "").toString().trim().toLowerCase();
+    if (!s) return false;
+    // Your headerful file: "name, orgnr" (sometimes with spaces)
+    if (/\borgnr\b/.test(s)) return true;
+    if (/\bname\b/.test(s) && /,/.test(s)) return true;
+    // Headerless file starts with https://...
+    if (/^https?:\/\//.test(s)) return false;
+    return false;
+}
+
+function readFirstNonEmptyLine(filePath) {
+    try {
+        const fd = fs.openSync(filePath, "r");
+        const buf = Buffer.alloc(8192);
+        const bytes = fs.readSync(fd, buf, 0, buf.length, 0);
+        fs.closeSync(fd);
+        const txt = buf
+            .slice(0, bytes)
+            .toString("utf8")
+            .replace(/^\uFEFF/, "");
+        const lines = txt.split(/\r?\n/).map((l) => l.trim());
+        return lines.find((l) => l.length > 0) || "";
+    } catch {
+        return "";
+    }
+}
+
+async function resolveOrgFromHittaSearch(page, query, navTimeoutMs) {
+    const raw = (query || "").toString();
+    const normalizeText = (s) =>
+        (s || "")
+            .toString()
+            .replace(/\u00A0/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+    const cleanQuery = (s) => {
+        let out = normalizeText(s);
+        // Drop long suffixes often present in scraped names.
+        if (out.includes(" - ")) out = out.split(" - ")[0];
+        out = out.replace(/\s*\(.*?\)\s*/g, " ");
+        out = out.replace(/\s*[!]+\s*$/g, "");
+        out = normalizeText(out);
+        if (out.length > 140) out = normalizeText(out.slice(0, 140));
+        return out;
+    };
+
+    const base = cleanQuery(raw);
+    if (!base) return "";
+
+    const variants = Array.from(
+        new Set(
+            [
+                base,
+                /\b(orgnr|organisationsnummer)\b/i.test(base)
+                    ? ""
+                    : `${base} orgnr`,
+                /\b(orgnr|organisationsnummer)\b/i.test(base)
+                    ? ""
+                    : `${base} organisationsnummer`,
+                /\b(ab|aktiebolag)\b/i.test(base) ? "" : `${base} AB`,
+            ].filter(Boolean),
+        ),
+    ).slice(0, 4);
+
+    // Avoid multi-minute stalls on hard/blocked queries.
+    const resolveBudgetMs =
+        Number.parseInt(
+            (process.env.RESOLVE_ORG_TIMEOUT_MS || "45000").toString(),
+            10,
+        ) || 45000;
+    const resolveNavTimeoutMs = Math.max(
+        5000,
+        Math.min(
+            Number.parseInt(
+                (process.env.RESOLVE_NAV_TIMEOUT_MS || "15000").toString(),
+                10,
+            ) || 15000,
+            navTimeoutMs || 30000,
+        ),
+    );
+    const tStart = Date.now();
+
+    const tokenize = (s) =>
+        normalizeText(s)
+            .toLowerCase()
+            .split(/\s+/)
+            .map((t) => t.replace(/[^0-9a-zåäö]/gi, ""))
+            .filter((t) => t.length >= 3);
+
+    const score = (candidateText, q) => {
+        const a = new Set(tokenize(candidateText));
+        const b = tokenize(q);
+        let hit = 0;
+        for (const t of b) if (a.has(t)) hit++;
+        // Prefer AB matches when requested
+        if (/\bab\b/i.test(q) && /\bab\b/i.test(candidateText)) hit += 1;
+        return hit;
+    };
+
+    const orgFromUrl = (u) => {
+        const s = (u || "").toString();
+        // Common patterns:
+        // - /företagsinformation/5566032123
+        // - /företagsinformation/scandvik+ab/5566032123#reports
+        // Also sometimes URL-encoded “företagsinformation”.
+        const patterns = [
+            /företagsinformation\/(?:[^/]+\/)?(\d{6}-?\d{4})/,
+            /foretagsinformation\/(?:[^/]+\/)?(\d{6}-?\d{4})/,
+            /f%C3%B6retagsinformation\/(?:[^/]+\/)?(\d{6}-?\d{4})/,
+        ];
+        for (const re of patterns) {
+            const m = s.match(re);
+            if (m && m[1]) {
+                const org = normalizeOrgNumber(m[1]);
+                if (org) return org;
+            }
+        }
+        return "";
+    };
+
+    const extractOrgFromCurrentPage = async () => {
+        // 1) Directly from current URL
+        const direct = orgFromUrl(page.url());
+        if (direct) return direct;
+
+        // 2) From DOM anchors
+        try {
+            const orgFromDom = await page.evaluate(() => {
+                const hrefs = Array.from(document.querySelectorAll("a"))
+                    .map((a) =>
+                        (a.getAttribute("href") || a.href || "").toString(),
+                    )
+                    .filter(Boolean);
+
+                const candidates = hrefs.filter((h) =>
+                    /information\//i.test(h),
+                );
+                for (const href of candidates) {
+                    const mm = href.match(
+                        /(företagsinformation|foretagsinformation|f%C3%B6retagsinformation)\/(?:[^/]+\/)?(\d{6}-?\d{4})/,
+                    );
+                    if (mm && mm[2]) return mm[2];
+                }
+                return "";
+            });
+            const org = normalizeOrgNumber(orgFromDom);
+            if (org) return org;
+        } catch {}
+
+        // 3) From HTML text tokens
+        try {
+            const html = await page.content();
+            const m = html.match(/\b\d{6}-\d{4}\b/);
+            if (m && m[0]) {
+                const org = normalizeOrgNumber(m[0]);
+                if (org) return org;
+            }
+            const m2 = html.match(/\b\d{10}\b/);
+            if (m2 && m2[0]) {
+                const org = normalizeOrgNumber(m2[0]);
+                if (org) return org;
+            }
+        } catch {}
+
+        return "";
+    };
+
+    const waitForResults = async () => {
+        try {
+            await page.waitForSelector('a[href*="företagsinformation/"]', {
+                timeout: 6000,
+            });
+        } catch {
+            // Some pages render results without anchors immediately; allow a short settle.
+            await sleep(1200);
+        }
+    };
+
+    const urlsFor = (q) => [
+        `https://www.hitta.se/sok?vad=${encodeURIComponent(q)}`,
+        `https://www.hitta.se/sok?vad=${encodeURIComponent(q)}&typ=företag`,
+        `https://www.hitta.se/sök?vad=${encodeURIComponent(q)}`,
+    ];
+
+    for (const v of variants) {
+        if (Date.now() - tStart > resolveBudgetMs) return "";
+        for (const url of urlsFor(v)) {
+            try {
+                if (Date.now() - tStart > resolveBudgetMs) return "";
+                await page.goto(url, {
+                    waitUntil: "domcontentloaded",
+                    timeout: resolveNavTimeoutMs,
+                });
+                await tryAcceptCookies(page);
+
+                // Sometimes Hitta redirects directly to a company page.
+                const directOrg = await extractOrgFromCurrentPage();
+                if (directOrg) return directOrg;
+
+                await waitForResults();
+
+                const candidates = await page.evaluate(() => {
+                    const out = [];
+                    const anchors = Array.from(document.querySelectorAll("a"));
+                    for (const a of anchors) {
+                        const href =
+                            (a && (a.getAttribute("href") || a.href)) || "";
+                        const text = (a && a.textContent) || "";
+                        if (!href) continue;
+                        // Search results often link to /verksamhet/... pages.
+                        if (
+                            /\/verksamhet\//i.test(href) ||
+                            /information\//i.test(href)
+                        ) {
+                            out.push({ href, text });
+                        }
+                    }
+                    return out;
+                });
+
+                // 1) If search page already has företagsinformation links, use them.
+                let bestInfo = { org: "", score: -1 };
+                for (const c of Array.isArray(candidates) ? candidates : []) {
+                    const href = (c && c.href) || "";
+                    if (!/information\//i.test(href)) continue;
+                    const org = orgFromUrl(href);
+                    if (!org) continue;
+                    const sc = score((c && c.text) || "", v);
+                    if (sc > bestInfo.score) bestInfo = { org, score: sc };
+                    if (sc >= 3) return org;
+                }
+                if (bestInfo.org) return bestInfo.org;
+
+                // 2) Otherwise, follow top /verksamhet/ results and extract orgnr there.
+                const verksamhet = (Array.isArray(candidates) ? candidates : [])
+                    .filter((c) => /\/verksamhet\//i.test((c && c.href) || ""))
+                    .map((c) => ({
+                        href: (c && c.href) || "",
+                        text: (c && c.text) || "",
+                        s: score((c && c.text) || "", v),
+                    }))
+                    .sort((a, b) => b.s - a.s)
+                    .slice(0, 3);
+
+                for (const r of verksamhet) {
+                    const href = (r && r.href ? r.href : "").toString();
+                    if (!href) continue;
+                    const abs = href.startsWith("http")
+                        ? href
+                        : `https://www.hitta.se${href}`;
+                    try {
+                        await page.goto(abs, {
+                            waitUntil: "domcontentloaded",
+                            timeout: resolveNavTimeoutMs,
+                        });
+                        await tryAcceptCookies(page);
+                        // Let any dynamic content settle briefly.
+                        await sleep(1200);
+                        const org = await extractOrgFromCurrentPage();
+                        if (org) return org;
+                    } catch {
+                        // ignore and continue
+                    }
+                }
+            } catch {
+                // try next url / variant
+            }
+        }
+    }
+
+    return "";
+}
+
 function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
 }
@@ -389,6 +669,98 @@ function buildContactExtractor() {
             phones,
         };
     };
+}
+
+async function scrapeCompanyMeta(page) {
+    try {
+        return await page.evaluate(() => {
+            const norm = (s) =>
+                (s || "")
+                    .toString()
+                    .replace(/\u00A0/g, " ")
+                    .replace(/\s+/g, " ")
+                    .trim();
+
+            const bodyText = norm(document.body?.innerText || "");
+
+            // Legal form — Hitta shows the bolagsform somewhere on the page.
+            const isAB =
+                /\baktiebolag\b/i.test(bodyText) ||
+                /\bAB\b/.test(bodyText);
+
+            // Registration year: "Registrerat 2003-04-12" / "Bolaget registrerat: 2008"
+            // Also handles "F-skatt sedan 2010-05-01" as a weak fallback.
+            let regYear = null;
+            const regPatterns = [
+                /registrerat[^\d]{0,20}(\d{4})/i,
+                /bolaget registrerat[^\d]{0,20}(\d{4})/i,
+                /registreringsdatum[^\d]{0,20}(\d{4})/i,
+                /bildat[^\d]{0,20}(\d{4})/i,
+            ];
+            for (const re of regPatterns) {
+                const m = bodyText.match(re);
+                if (m && m[1]) {
+                    const y = parseInt(m[1], 10);
+                    if (y >= 1900 && y <= new Date().getFullYear()) {
+                        regYear = y;
+                        break;
+                    }
+                }
+            }
+
+            // Employees: "5 anställda", "Antal anställda: 3", "Anställda 2"
+            let employees = null;
+            const empPatterns = [
+                /antal\s+anst[äa]llda[^\d]{0,5}(\d{1,5})/i,
+                /anst[äa]llda[^\d]{0,5}(\d{1,5})/i,
+                /(\d{1,5})\s*anst[äa]llda/i,
+            ];
+            for (const re of empPatterns) {
+                const m = bodyText.match(re);
+                if (m && m[1]) {
+                    const n = parseInt(m[1], 10);
+                    if (Number.isFinite(n) && n >= 0 && n <= 100000) {
+                        employees = n;
+                        break;
+                    }
+                }
+            }
+
+            // Branch / SNI: "Bransch: Byggverksamhet" or "Verksamhet: ..."
+            let branch = null;
+            const branchPatterns = [
+                /bransch[:\s]+([^\n|]{3,120})/i,
+                /verksamhetsbeskrivning[:\s]+([^\n|]{3,200})/i,
+                /huvudsaklig\s+verksamhet[:\s]+([^\n|]{3,200})/i,
+            ];
+            for (const re of branchPatterns) {
+                const m = bodyText.match(re);
+                if (m && m[1]) {
+                    branch = norm(m[1]).slice(0, 200);
+                    break;
+                }
+            }
+
+            // SNI code: "SNI: 41200" or "SNI-kod 43.29"
+            let sniCode = null;
+            const sniMatch = bodyText.match(
+                /\bsni[-\s]?kod[:\s]*([0-9][0-9.\s]{1,10})/i,
+            );
+            if (sniMatch && sniMatch[1]) {
+                sniCode = sniMatch[1].replace(/\s+/g, "").trim();
+            }
+
+            return { regYear, employees, isAB, branch, sniCode };
+        });
+    } catch {
+        return {
+            regYear: null,
+            employees: null,
+            isAB: false,
+            branch: null,
+            sniCode: null,
+        };
+    }
 }
 
 async function scrapeContactDetails(page) {
@@ -1477,34 +1849,72 @@ async function runScraper() {
 
     // Load input CSV (supports your column names)
     const targets = [];
+    const firstLine = readFirstNonEmptyLine(config.paths.inputCsv);
+    const hasHeader = detectCsvHeaderLike(firstLine);
+
     await new Promise((resolve) => {
-        fs.createReadStream(config.paths.inputCsv)
-            .pipe(
-                csv({
-                    mapHeaders: ({ header }) =>
-                        (header || "")
-                            .toString()
-                            .replace(/^\uFEFF/, "")
-                            .trim(),
-                }),
-            )
+        const stream = fs.createReadStream(config.paths.inputCsv);
+
+        const parser = hasHeader
+            ? csv({
+                  mapHeaders: ({ header }) =>
+                      (header || "")
+                          .toString()
+                          .replace(/^\uFEFF/, "")
+                          .trim(),
+              })
+            : csv({
+                  // Headerless format: url, name/AB, orgnr, email(s)
+                  headers: ["url", "name", "orgnr", "email"],
+                  skipLines: 0,
+                  mapValues: ({ value }) =>
+                      (value || "")
+                          .toString()
+                          .replace(/^\uFEFF/, "")
+                          .trim(),
+              });
+
+        stream
+            .pipe(parser)
             .on("data", (d) => {
-                const org = (d.orgnr || d.OrgNr || d.org || "")
+                const org = normalizeOrgNumber(d.orgnr || d.OrgNr || d.org);
+                const name = (
+                    d.name ||
+                    d.Name ||
+                    d.company ||
+                    d.Company ||
+                    d.ab ||
+                    d.AB ||
+                    ""
+                )
                     .toString()
-                    .replace(/-/g, "")
                     .trim();
-                const name = d.name || d.Name || "";
-                if (org && /^\d{10}$/.test(org)) targets.push({ org, name });
+                const url = (d.url || d.URL || "").toString().trim();
+                const seedEmail = (d.email || d.Email || "").toString().trim();
+
+                if (org) {
+                    targets.push({ org, name, url, seedEmail });
+                    return;
+                }
+
+                // If orgnr missing, keep it as a name-search target.
+                if (name) {
+                    targets.push({ org: "", name, url, seedEmail });
+                }
             })
             .on("end", resolve);
     });
 
-    // Debug convenience: if ORG is provided but not in input.csv, run it anyway.
+    // Debug convenience: if ORG is provided but not in input CSV, run it anyway.
     if (ONLY_ORG && !targets.some((t) => t.org === ONLY_ORG)) {
         targets.push({ org: ONLY_ORG, name: "" });
     }
 
-    console.log(`Loaded ${targets.length} orgs from input CSV`);
+    const countWithOrg = targets.filter((t) => t && t.org).length;
+    const countNeedsResolve = targets.length - countWithOrg;
+    console.log(
+        `Loaded ${targets.length} targets from input CSV (${countWithOrg} with orgnr, ${countNeedsResolve} needing lookup)`,
+    );
 
     const done = loadAlreadyScrapedSet();
     console.log(`Already scraped: ${done.size} orgs`);
@@ -1667,6 +2077,14 @@ async function runScraper() {
         let tPdfMs = 0;
 
         let contact = null;
+        let meta = {
+            regYear: null,
+            employees: null,
+            isAB: false,
+            branch: null,
+            sniCode: null,
+        };
+        let financeTables = [];
         let lender = { keywords: [], source: "NONE", pdfUrl: null };
         let completed = false;
         let lastErr = null;
@@ -1684,6 +2102,9 @@ async function runScraper() {
                 );
                 await tryAcceptCookies(page);
                 contact = await scrapeContactDetails(page);
+                try {
+                    meta = await scrapeCompanyMeta(page);
+                } catch {}
                 tBaseMs += Date.now() - tb0;
 
                 if (LOG_STAGES) console.log(`${prefix}   -> reports page`);
@@ -1696,6 +2117,11 @@ async function runScraper() {
                     },
                 );
                 await tryAcceptCookies(page);
+                await waitForFinanceTables(page);
+                try {
+                    const scraped = await scrapeFinanceTables(page);
+                    if (Array.isArray(scraped)) financeTables = scraped;
+                } catch {}
                 tReportsMs += Date.now() - tr0;
 
                 if (LOG_STAGES) console.log(`${prefix}   -> pdf scan`);
@@ -1872,7 +2298,11 @@ async function runScraper() {
             Boolean(contact?.email) ||
             Boolean(contact?.phone) ||
             (Array.isArray(lenderKeywords) && lenderKeywords.length) ||
-            (Array.isArray(lenderKeywordLines) && lenderKeywordLines.length);
+            (Array.isArray(lenderKeywordLines) && lenderKeywordLines.length) ||
+            (Array.isArray(financeTables) && financeTables.length) ||
+            Boolean(meta?.employees) ||
+            Boolean(meta?.regYear) ||
+            Boolean(meta?.branch);
 
         if (!hasAnyData && (lender?.source || "NONE") === "NONE") {
             // If we never completed a successful pass, treat as failure so the
@@ -1891,11 +2321,16 @@ async function runScraper() {
                 name,
                 email: contact?.email || null,
                 phone: contact?.phone || null,
+                regYear: meta?.regYear || null,
+                employees: meta?.employees ?? null,
+                isAB: Boolean(meta?.isAB),
+                branch: meta?.branch || null,
+                sniCode: meta?.sniCode || null,
                 lenderKeywords: lenderKeywords,
                 lenderKeywordLines: lenderKeywordLines,
                 kreditinstitutSkulderLines: cleanedKreditinstitutSkulderLines,
                 lenderKeywordsSource: lender?.source || null,
-                tables: [],
+                tables: Array.isArray(financeTables) ? financeTables : [],
             }) + "\n",
         );
 
@@ -1912,7 +2347,56 @@ async function runScraper() {
             console.log("Abort requested — stopping before next org.");
             break;
         }
-        const { org, name } = t;
+        let { org, name, url } = t;
+
+        // Resolve orgnr by name if missing
+        if (!org) {
+            try {
+                await ensureBrowserAndPage();
+                const q = (name || "").toString().trim();
+                if (q) {
+                    console.log(`[lookup] Resolving orgnr for: ${q}`);
+                    const resolved = await resolveOrgFromHittaSearch(
+                        page,
+                        q,
+                        NAV_TIMEOUT_MS,
+                    );
+                    org = normalizeOrgNumber(resolved);
+                    if (org) console.log(`[lookup]   -> ${q} => ${org}`);
+                }
+
+                // Fallback: try searching by website hostname if available.
+                if (!org && url) {
+                    try {
+                        const host = new URL(url).hostname
+                            .toString()
+                            .replace(/^www\./i, "")
+                            .trim();
+                        if (host) {
+                            console.log(
+                                `[lookup] Resolving orgnr by hostname: ${host}`,
+                            );
+                            const resolved2 = await resolveOrgFromHittaSearch(
+                                page,
+                                host,
+                                NAV_TIMEOUT_MS,
+                            );
+                            org = normalizeOrgNumber(resolved2);
+                            if (org)
+                                console.log(`[lookup]   -> ${host} => ${org}`);
+                        }
+                    } catch {}
+                }
+            } catch {}
+        }
+
+        if (!org) {
+            console.log(
+                `[skip] Could not determine orgnr for: ${(name || "(no name)").toString().trim()}`,
+            );
+            continue;
+        }
+
         if (ONLY_ORG && org !== ONLY_ORG) continue;
 
         let attemptTarget = 0;

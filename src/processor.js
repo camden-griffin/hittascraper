@@ -6,6 +6,109 @@ const config = require("./config");
 const { parseMoneyStringToInt, normalizeLabel } = require("./utils");
 const { scanPdfLenderKeywords } = require("./pdfKeywordScan");
 
+function classifyBranch(branch) {
+    const s = (branch || "").toString();
+    if (!s) return "";
+    const icp = config.icp || {};
+    const core = icp.coreBranchPatterns || [];
+    const secondary = icp.secondaryBranchPatterns || [];
+    for (const re of core) if (re.test(s)) return "core";
+    for (const re of secondary) if (re.test(s)) return "secondary";
+    return "other";
+}
+
+function pickLatestValueFromTables(tables, labelRegex) {
+    if (!Array.isArray(tables) || !tables.length) return null;
+    for (const t of tables) {
+        const label = (t?.rawLabel || "").toString();
+        if (!labelRegex.test(label)) continue;
+
+        const years = Array.isArray(t.years) ? t.years : [];
+        const values = Array.isArray(t.values) ? t.values : [];
+        if (!years.length || !values.length) continue;
+        if (values.length !== years.length) continue;
+
+        for (let i = 0; i < values.length; i++) {
+            const parsed = parseMoneyStringToInt(values[i]);
+            if (parsed !== null) {
+                return {
+                    year: years[i],
+                    // Hitta finance tables are reported in TKR; convert to SEK.
+                    value: parsed * (config.multiplier || 1000),
+                };
+            }
+        }
+    }
+    return null;
+}
+
+function computeIcpScore(row) {
+    const icp = config.icp || {};
+    let score = 0;
+    const reasons = [];
+
+    if (row.Is_AB) {
+        score++;
+        reasons.push("AB");
+    }
+
+    const rev = Number(row.Omsattning_SEK);
+    if (Number.isFinite(rev) && rev > 0) {
+        if (
+            rev >= (icp.revenueMinSEK || 3_000_000) &&
+            rev <= (icp.revenueMaxSEK || 8_000_000)
+        ) {
+            score += 2;
+            reasons.push("revenue_core");
+        } else if (rev <= (icp.revenueSoftMaxSEK || 15_000_000)) {
+            score += 1;
+            reasons.push("revenue_soft");
+        }
+    }
+
+    const emp = Number(row.Employees);
+    if (Number.isFinite(emp) && emp > 0) {
+        if (
+            emp >= (icp.employeesMin || 2) &&
+            emp <= (icp.employeesMax || 4)
+        ) {
+            score += 2;
+            reasons.push("employees_core");
+        } else if (emp <= (icp.employeesSoftMax || 10)) {
+            score += 1;
+            reasons.push("employees_soft");
+        }
+    }
+
+    const regYear = Number(row.Reg_Year);
+    if (Number.isFinite(regYear) && regYear > 1900) {
+        const age = new Date().getFullYear() - regYear;
+        if (age >= (icp.preferredCompanyAgeYears || 10)) {
+            score += 2;
+            reasons.push("age_core");
+        } else if (age >= (icp.minCompanyAgeYears || 8)) {
+            score += 1;
+            reasons.push("age_soft");
+        }
+    }
+
+    const segment = row.Branch_Segment;
+    if (segment === "core") {
+        score += 2;
+        reasons.push("branch_core");
+    } else if (segment === "secondary") {
+        score += 1;
+        reasons.push("branch_secondary");
+    }
+
+    if (row.Pdf_Lender_Keywords) {
+        score += 2;
+        reasons.push("has_lender_debt");
+    }
+
+    return { score, reasons: reasons.join(",") };
+}
+
 function canonicalKey(s) {
     return (s || "")
         .toString()
@@ -267,6 +370,29 @@ async function writeContactsCsvFromJsonl(pdfKeywordMap) {
                   })
                 : null);
 
+        const tables = Array.isArray(obj.tables) ? obj.tables : [];
+        const omsattningPick = pickLatestValueFromTables(
+            tables,
+            /^(nettoomsättning|omsättning|rörelsens intäkter)/i,
+        );
+        const rorelseresultatPick = pickLatestValueFromTables(
+            tables,
+            /^rörelseresultat/i,
+        );
+        const aretsResultatPick = pickLatestValueFromTables(
+            tables,
+            /^(årets resultat|resultat efter skatt)/i,
+        );
+        const kortfristigaPick = pickLatestValueFromTables(
+            tables,
+            /^kortfristiga skulder/i,
+        );
+        const langfristigaPick = pickLatestValueFromTables(
+            tables,
+            /^långfristiga skulder/i,
+        );
+        const branchSegment = classifyBranch(obj.branch);
+
         if (!byOrg.has(orgNr)) {
             let pdfLenderKeywords = "";
             if (jsonlKeywords && jsonlKeywords.length) {
@@ -288,6 +414,33 @@ async function writeContactsCsvFromJsonl(pdfKeywordMap) {
                 Name: obj.name || "Unknown",
                 Email: obj.email || "",
                 Phone: obj.phone || "",
+                Is_AB: Boolean(obj.isAB),
+                Reg_Year: obj.regYear || "",
+                Company_Age:
+                    obj.regYear &&
+                    Number.isFinite(Number(obj.regYear))
+                        ? new Date().getFullYear() - Number(obj.regYear)
+                        : "",
+                Employees: Number.isFinite(Number(obj.employees))
+                    ? Number(obj.employees)
+                    : "",
+                Branch: obj.branch || "",
+                Branch_Segment: branchSegment,
+                SNI_Code: obj.sniCode || "",
+                Omsattning_SEK: omsattningPick ? omsattningPick.value : "",
+                Omsattning_Year: omsattningPick ? omsattningPick.year : "",
+                Rorelseresultat_SEK: rorelseresultatPick
+                    ? rorelseresultatPick.value
+                    : "",
+                Arets_Resultat_SEK: aretsResultatPick
+                    ? aretsResultatPick.value
+                    : "",
+                Kortfristiga_Skulder_SEK: kortfristigaPick
+                    ? kortfristigaPick.value
+                    : "",
+                Langfristiga_Skulder_SEK: langfristigaPick
+                    ? langfristigaPick.value
+                    : "",
                 Pdf_Lender_Keywords: pdfLenderKeywords,
                 Pdf_Lender_Keyword_Lines:
                     linesArrayToJoinedString(jsonlKeywordLines),
@@ -309,6 +462,39 @@ async function writeContactsCsvFromJsonl(pdfKeywordMap) {
             row.Name = obj.name;
         if (!row.Email && obj.email) row.Email = obj.email;
         if (!row.Phone && obj.phone) row.Phone = obj.phone;
+        if (!row.Is_AB && obj.isAB) row.Is_AB = true;
+        if (!row.Reg_Year && obj.regYear) {
+            row.Reg_Year = obj.regYear;
+            row.Company_Age =
+                new Date().getFullYear() - Number(obj.regYear);
+        }
+        if (
+            (row.Employees === "" || row.Employees == null) &&
+            Number.isFinite(Number(obj.employees))
+        ) {
+            row.Employees = Number(obj.employees);
+        }
+        if (!row.Branch && obj.branch) {
+            row.Branch = obj.branch;
+            row.Branch_Segment = branchSegment;
+        }
+        if (!row.SNI_Code && obj.sniCode) row.SNI_Code = obj.sniCode;
+        if (row.Omsattning_SEK === "" && omsattningPick) {
+            row.Omsattning_SEK = omsattningPick.value;
+            row.Omsattning_Year = omsattningPick.year;
+        }
+        if (row.Rorelseresultat_SEK === "" && rorelseresultatPick) {
+            row.Rorelseresultat_SEK = rorelseresultatPick.value;
+        }
+        if (row.Arets_Resultat_SEK === "" && aretsResultatPick) {
+            row.Arets_Resultat_SEK = aretsResultatPick.value;
+        }
+        if (row.Kortfristiga_Skulder_SEK === "" && kortfristigaPick) {
+            row.Kortfristiga_Skulder_SEK = kortfristigaPick.value;
+        }
+        if (row.Langfristiga_Skulder_SEK === "" && langfristigaPick) {
+            row.Langfristiga_Skulder_SEK = langfristigaPick.value;
+        }
 
         // Merge keywords across multiple JSONL entries.
         const fromJsonl = keywordsArrayToJoinedString(jsonlKeywords);
@@ -368,10 +554,31 @@ async function writeContactsCsvFromJsonl(pdfKeywordMap) {
     const contactsWriter = createObjectCsvWriter({
         path: config.paths.contactsCsv,
         header: [
+            { id: "ICP_Score", title: "ICP_Score" },
+            { id: "ICP_Reasons", title: "ICP_Reasons" },
             { id: "OrgNr", title: "OrgNr" },
             { id: "Name", title: "Name" },
             { id: "Email", title: "Email" },
             { id: "Phone", title: "Phone" },
+            { id: "Is_AB", title: "Is_AB" },
+            { id: "Reg_Year", title: "Reg_Year" },
+            { id: "Company_Age", title: "Company_Age" },
+            { id: "Employees", title: "Employees" },
+            { id: "Branch", title: "Branch" },
+            { id: "Branch_Segment", title: "Branch_Segment" },
+            { id: "SNI_Code", title: "SNI_Code" },
+            { id: "Omsattning_SEK", title: "Omsattning_SEK" },
+            { id: "Omsattning_Year", title: "Omsattning_Year" },
+            { id: "Rorelseresultat_SEK", title: "Rorelseresultat_SEK" },
+            { id: "Arets_Resultat_SEK", title: "Arets_Resultat_SEK" },
+            {
+                id: "Kortfristiga_Skulder_SEK",
+                title: "Kortfristiga_Skulder_SEK",
+            },
+            {
+                id: "Langfristiga_Skulder_SEK",
+                title: "Langfristiga_Skulder_SEK",
+            },
             { id: "Pdf_Lender_Keywords", title: "Lender_Keywords" },
             // Structured: produce two keyword-line groups with two values each.
             // IDs remain unique; titles match your requested short names.
@@ -403,9 +610,22 @@ async function writeContactsCsvFromJsonl(pdfKeywordMap) {
         ],
     });
 
-    const rows = Array.from(byOrg.values());
+    const rows = Array.from(byOrg.values()).map((r) => {
+        const { score, reasons } = computeIcpScore(r);
+        return { ...r, ICP_Score: score, ICP_Reasons: reasons };
+    });
+    rows.sort((a, b) => (b.ICP_Score || 0) - (a.ICP_Score || 0));
+
     await contactsWriter.writeRecords(rows);
     console.log("Saved", rows.length, "rows to", config.paths.contactsCsv);
+
+    const coreHits = rows.filter((r) => (r.ICP_Score || 0) >= 6).length;
+    const warmHits = rows.filter(
+        (r) => (r.ICP_Score || 0) >= 3 && (r.ICP_Score || 0) < 6,
+    ).length;
+    console.log(
+        `ICP breakdown: ${coreHits} strong (score>=6), ${warmHits} warm (3-5), ${rows.length - coreHits - warmHits} weak`,
+    );
 }
 
 /**

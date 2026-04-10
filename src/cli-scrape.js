@@ -1,3 +1,35 @@
+function pickArgValue(argv, names) {
+    const args = Array.isArray(argv) ? argv : [];
+    for (let i = 0; i < args.length; i++) {
+        const a = (args[i] || "").toString();
+        if (names.includes(a)) {
+            const next = args[i + 1];
+            if (next && !next.toString().startsWith("-")) return next;
+        }
+        for (const n of names) {
+            if (a.startsWith(`${n}=`)) return a.slice(n.length + 1);
+        }
+    }
+    return "";
+}
+
+// Allow selecting a different input CSV:
+// - node src/cli-scrape.js --input input/only_AB_or_Orgnr.csv
+// - npm run scrape -- --input input/only_AB_or_Orgnr.csv
+const argv = process.argv.slice(2);
+let inputArg = pickArgValue(argv, ["--input", "-i"]);
+
+// npm can swallow unknown flags like --input and leave only the value as a
+// positional argument. If we see a positional .csv, treat it as input.
+if (!inputArg) {
+    const positionalCsv = argv.find(
+        (a) => a && !a.toString().startsWith("-") && /\.csv$/i.test(a),
+    );
+    if (positionalCsv) inputArg = positionalCsv.toString();
+}
+
+if (inputArg) process.env.INPUT_CSV = inputArg;
+
 const scraper = require("./scraper");
 
 let terminating = false;

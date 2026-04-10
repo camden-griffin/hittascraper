@@ -10,8 +10,8 @@
         "scrape": "node src/cli-scrape.js",
         "process": "node src/cli-process.js",
         "wide-report": "node src/wide_report.js",
-        "pipeline": "npm run preflight && npm run scrape && npm run process && npm run wide-report",
-        "pipeline:offline": "npm run preflight:offline && npm run process && npm run wide-report"
+        "pipeline": "node src/cli-pipeline.js",
+        "pipeline:offline": "node src/cli-pipeline.js --offline"
     },
     "keywords": [],
     "author": "",
