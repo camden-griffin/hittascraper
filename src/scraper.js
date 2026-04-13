@@ -726,18 +726,37 @@ async function scrapeCompanyMeta(page) {
                 }
             }
 
-            // Branch / SNI: "Bransch: Byggverksamhet" or "Verksamhet: ..."
+            // Branch: Hitta renders SNI codes inline as "43341·Måleriarbeten 43210·Elinstallationer Årsredovisningar..."
+            // norm() collapses all whitespace to spaces so we stop at the next SNI code or known page landmarks.
+            const BRANCH_STOP = /(?:\s\d{4,6}[\u00B7\s]|årsredovisning|visa bolagsdata|öppna karta|besöksadress|vägbeskrivning)/i;
             let branch = null;
-            const branchPatterns = [
-                /bransch[:\s]+([^\n|]{3,120})/i,
-                /verksamhetsbeskrivning[:\s]+([^\n|]{3,200})/i,
-                /huvudsaklig\s+verksamhet[:\s]+([^\n|]{3,200})/i,
-            ];
-            for (const re of branchPatterns) {
-                const m = bodyText.match(re);
-                if (m && m[1]) {
-                    branch = norm(m[1]).slice(0, 200);
-                    break;
+            // Primary: "SNIcode·BranchName" — take just the first entry's name.
+            const sniDotM = bodyText.match(/\b(\d{4,6})·([A-Za-zÀ-öø-ÿ][^·]{2,150})/);
+            if (sniDotM && sniDotM[2]) {
+                let raw = sniDotM[2];
+                const stop = raw.search(BRANCH_STOP);
+                if (stop > 0) raw = raw.slice(0, stop);
+                // Final safety: cut at any digit (catches leftover SNI codes / addresses).
+                raw = raw.replace(/\s*\d.*$/, "").trim();
+                branch = raw.slice(0, 80) || null;
+            }
+            // Fallback: explicit "Bransch:" / "Verksamhetsbeskrivning:" label.
+            if (!branch) {
+                const branchPatterns = [
+                    /bransch[:\s]+(.{3,200})/i,
+                    /verksamhetsbeskrivning[:\s]+(.{3,200})/i,
+                    /huvudsaklig\s+verksamhet[:\s]+(.{3,200})/i,
+                ];
+                for (const re of branchPatterns) {
+                    const m = bodyText.match(re);
+                    if (m && m[1]) {
+                        let raw = m[1].replace(/^\d{4,6}[·\s]*/, "");
+                        const stop = raw.search(BRANCH_STOP);
+                        if (stop > 0) raw = raw.slice(0, stop);
+                        raw = raw.replace(/\s*\d.*$/, "").trim();
+                        branch = raw.slice(0, 80) || null;
+                        break;
+                    }
                 }
             }
 
@@ -1442,7 +1461,31 @@ async function tryDownloadAnnualReportPdfViaButtons(page) {
     return { tried: true, buf: null };
 }
 
-async function scrapeLenderKeywordsPdfFirst(browser, page) {
+const PDF_SAVE_LIMIT = Number.parseInt(
+    (process.env.PDF_SAVE_LIMIT || "50").toString(),
+    10,
+) || 50;
+
+function savePdfToDisk(orgNr, buf) {
+    if (!orgNr) return;
+    try {
+        fs.ensureDirSync(config.paths.pdfDir);
+        const existing = fs.readdirSync(config.paths.pdfDir).filter((f) =>
+            f.toLowerCase().endsWith(".pdf"),
+        );
+        if (existing.length >= PDF_SAVE_LIMIT) {
+            // Evict the oldest file to stay within the limit.
+            const oldest = existing
+                .map((f) => ({ f, mtime: fs.statSync(path.join(config.paths.pdfDir, f)).mtimeMs }))
+                .sort((a, b) => a.mtime - b.mtime)[0];
+            if (oldest) fs.removeSync(path.join(config.paths.pdfDir, oldest.f));
+        }
+        const pdfPath = path.join(config.paths.pdfDir, `${orgNr}_annual.pdf`);
+        fs.writeFileSync(pdfPath, buf);
+    } catch { /* non-fatal */ }
+}
+
+async function scrapeLenderKeywordsPdfFirst(browser, page, orgNr) {
     const matchers = buildKeywordMatchers(config.pdfLenderKeywords);
     const USE_XY_COORDS = /^1|true$/i.test(
         (process.env.USE_XY_COORDS || "").toString(),
@@ -1638,6 +1681,8 @@ async function scrapeLenderKeywordsPdfFirst(browser, page) {
                 continue;
             }
 
+            savePdfToDisk(orgNr, buf);
+
             const parsed = await withTimeout(
                 pdfParse(buf),
                 PDF_PARSE_TIMEOUT_MS,
@@ -1699,6 +1744,8 @@ async function scrapeLenderKeywordsPdfFirst(browser, page) {
         buttonTried = Boolean(tried);
         if (buf) {
             if (buf.length <= MAX_PDF_BYTES) {
+                savePdfToDisk(orgNr, buf);
+
                 const parsed = await withTimeout(
                     pdfParse(buf),
                     PDF_PARSE_TIMEOUT_MS,
@@ -2126,7 +2173,7 @@ async function runScraper() {
 
                 if (LOG_STAGES) console.log(`${prefix}   -> pdf scan`);
                 const tp0 = Date.now();
-                lender = await scrapeLenderKeywordsPdfFirst(browser, page);
+                lender = await scrapeLenderKeywordsPdfFirst(browser, page, org);
                 tPdfMs += Date.now() - tp0;
 
                 completed = true;
