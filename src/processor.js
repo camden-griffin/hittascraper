@@ -223,6 +223,35 @@ function buildStructuredLineColumns(prefix, items, keys, opts) {
     return out;
 }
 
+/**
+ * Clamp PDF-extracted debt line numbers against the balance sheet totals.
+ * If a _Num value is larger than total debt (kortfristiga + langfristiga),
+ * it's an OCR artifact — clear it.
+ * Also clears any value > 50_000_000 unconditionally (no small construction
+ * company in this dataset has a single credit-institution debt line that large).
+ */
+function sanitizeDebtNums(row, structuredKeys) {
+    const MAX_HARD = 50_000_000;
+    const totalDebt =
+        (Number(row.Kortfristiga_Skulder_SEK) || 0) +
+        (Number(row.Langfristiga_Skulder_SEK) || 0);
+    const ceiling = totalDebt > 0 ? Math.min(totalDebt * 1.05, MAX_HARD) : MAX_HARD;
+
+    for (const ck of structuredKeys) {
+        for (let line = 1; line <= 10; line++) {
+            for (let num = 1; num <= 10; num++) {
+                const key = `Pdf_Lender_${ck}_Line${line}_Num${num}`;
+                if (!(key in row)) continue;
+                const raw = (row[key] || "").toString().replace(/\s/g, "");
+                if (!raw) continue;
+                const n = Math.abs(parseInt(raw, 10));
+                if (!Number.isFinite(n)) continue;
+                if (n > ceiling) row[key] = "";
+            }
+        }
+    }
+}
+
 function keywordsArrayToJoinedString(arr) {
     if (!Array.isArray(arr) || !arr.length) return "";
     return Array.from(new Set(arr))
@@ -454,6 +483,7 @@ async function writeContactsCsvFromJsonl(pdfKeywordMap) {
                     { maxLinesPerKey: 10, maxNumsPerLine: 10 },
                 ),
             });
+            sanitizeDebtNums(byOrg.get(orgNr), structuredKeysCanonical);
             continue;
         }
 
@@ -535,6 +565,7 @@ async function writeContactsCsvFromJsonl(pdfKeywordMap) {
         for (const [k, v] of Object.entries(lenderStruct)) {
             if (!row[k] && v) row[k] = v;
         }
+        sanitizeDebtNums(row, structuredKeysCanonical);
 
         const kreditLines = linesArrayToJoinedString(
             derivedKreditinstitutSkulderLines,
