@@ -172,8 +172,23 @@ function clusterRows(tokens) {
 }
 
 function extractValuesByX(tokens, preferredCount) {
-    const nums = tokens.filter((t) => looksNumericToken(t.text));
+    let nums = tokens.filter((t) => looksNumericToken(t.text));
     if (!nums.length) return [];
+
+    // Strip lone small-integer note-reference tokens (1–99) that appear to the
+    // left of the value columns in Swedish annual reports ("Not" column).
+    // Detect: a numeric token is a note ref if it's a 1-2 digit integer AND
+    // there is at least one other numeric token significantly to its right (>60pt gap).
+    if (nums.length > 1 && preferredCount > 0) {
+        const sorted = nums.slice().sort((a, b) => a.x - b.x);
+        const leftmost = sorted[0];
+        const second = sorted[1];
+        const gap = second.x - (leftmost.x + (leftmost.w || 0));
+        if (gap > 60 && /^\d{1,2}$/.test(leftmost.text.trim())) {
+            nums = nums.filter((t) => t !== leftmost);
+        }
+    }
+
     if (nums.length === 1) {
         return extractNumbersFromText(nums[0].text, preferredCount || 0);
     }
