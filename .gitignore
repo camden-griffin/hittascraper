@@ -8,3 +8,4 @@ build/
 npm-debug.log*
 .vscode/
 .idea/
+output/finance_table_data.jsonl
