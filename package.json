@@ -11,7 +11,8 @@
         "process": "node src/cli-process.js",
         "wide-report": "node src/wide_report.js",
         "pipeline": "node src/cli-pipeline.js",
-        "pipeline:offline": "node src/cli-pipeline.js --offline"
+        "pipeline:offline": "node src/cli-pipeline.js --offline",
+        "extract-emails": "node src/extract-emails.js"
     },
     "keywords": [],
     "author": "",
