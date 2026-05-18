@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python extract_emails.py output/finance_table_data.jsonl mobler_leads.csv -o output/emails.txt)"
+    ]
+  }
+}
