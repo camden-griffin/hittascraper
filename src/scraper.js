@@ -1930,6 +1930,8 @@ async function runScraper() {
                     d.Name ||
                     d.company ||
                     d.Company ||
+                    d.company_name ||
+                    d.legal_name ||
                     d.ab ||
                     d.AB ||
                     ""
@@ -1961,6 +1963,10 @@ async function runScraper() {
     const countNeedsResolve = targets.length - countWithOrg;
     console.log(
         `Loaded ${targets.length} targets from input CSV (${countWithOrg} with orgnr, ${countNeedsResolve} needing lookup)`,
+    );
+    // TEMP DEBUG: confirm names are being parsed from the input CSV.
+    console.log(
+        `[debug] input=${config.paths.inputCsv} hasHeader=${hasHeader} sample=${JSON.stringify(targets.slice(0, 3).map((t) => ({ org: t.org, name: t.name })))}`,
     );
 
     const done = loadAlreadyScrapedSet();
