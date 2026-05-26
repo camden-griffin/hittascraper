@@ -12,7 +12,11 @@
         "wide-report": "node src/wide_report.js",
         "pipeline": "node src/cli-pipeline.js",
         "pipeline:offline": "node src/cli-pipeline.js --offline",
-        "extract-emails": "node src/extract-emails.js"
+        "extract-emails": "node src/extract-emails.js",
+        "source-candidates": "node src/source_candidates_allabolag.js",
+        "resolve-websites": "node src/resolve_websites.js",
+        "resolve-websites:retry": "node src/resolve_websites.js --retry-not-found true --delayMs 2500",
+        "enrich-score": "node src/enrich_and_score_leads.js"
     },
     "keywords": [],
     "author": "",
@@ -20,7 +24,12 @@
     "dependencies": {
         "csv-parser": "^3.2.0",
         "csv-writer": "^1.6.0",
+        "dotenv": "^17.4.2",
         "fs-extra": "^11.3.3",
+        "he": "^1.2.0",
+        "libphonenumber-js": "^1.13.2",
+        "minimist": "^1.2.8",
+        "papaparse": "^5.5.3",
         "pdf-lib": "^1.17.1",
         "pdf-parse": "^1.1.4",
         "pdfjs-dist": "^5.4.624",

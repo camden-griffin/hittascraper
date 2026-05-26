@@ -93,17 +93,26 @@ export function LeadsTable({ logout }: { logout: () => void }) {
     }),
     col.accessor('email', {
       header: 'Email',
-      cell: (i) => {
-        const v = i.getValue();
-        return v ? <a className="text-blue-600 hover:underline text-xs" href={`mailto:${v}`}>{v}</a> : '';
-      },
+      cell: (info) => (
+        <LinkEditableCell
+          value={info.getValue() ?? ''}
+          href={(v) => `mailto:${v}`}
+          placeholder="add email…"
+          onSave={(v) => updateLead(info.row.original.org_nr, { email: v || null })}
+        />
+      ),
     }),
     col.accessor('phone', {
       header: 'Phone',
-      cell: (i) => {
-        const v = i.getValue();
-        return v ? <a className="text-blue-600 hover:underline text-xs whitespace-nowrap" href={`tel:${v}`}>{v}</a> : '';
-      },
+      cell: (info) => (
+        <LinkEditableCell
+          value={info.getValue() ?? ''}
+          href={(v) => `tel:${v}`}
+          placeholder="add phone…"
+          nowrap
+          onSave={(v) => updateLead(info.row.original.org_nr, { phone: v || null })}
+        />
+      ),
     }),
     col.accessor('branch', {
       header: 'Branch',
@@ -293,6 +302,69 @@ function PagBtn({ onClick, disabled, children }: { onClick: () => void; disabled
     >
       {children}
     </button>
+  );
+}
+
+function LinkEditableCell({
+  value,
+  href,
+  placeholder,
+  nowrap,
+  onSave,
+}: {
+  value: string;
+  href: (v: string) => string;
+  placeholder: string;
+  nowrap?: boolean;
+  onSave: (v: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [v, setV] = useState(value);
+  useEffect(() => setV(value), [value]);
+
+  function commit() {
+    setEditing(false);
+    if (v !== value) onSave(v);
+  }
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={v}
+        onChange={(e) => setV(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commit();
+          if (e.key === 'Escape') { setV(value); setEditing(false); }
+        }}
+        className="w-full bg-white border border-blue-500 rounded px-1 py-0.5 text-xs focus:outline-none"
+      />
+    );
+  }
+
+  if (!value) {
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="text-xs text-slate-400 italic hover:text-slate-600"
+      >
+        {placeholder}
+      </button>
+    );
+  }
+
+  return (
+    <span className={`group inline-flex items-center gap-1 ${nowrap ? 'whitespace-nowrap' : ''}`}>
+      <a className="text-blue-600 hover:underline text-xs" href={href(value)}>{value}</a>
+      <button
+        onClick={() => setEditing(true)}
+        title="Edit"
+        className="text-slate-400 opacity-0 group-hover:opacity-100 hover:text-slate-700 text-xs leading-none"
+      >
+        ✎
+      </button>
+    </span>
   );
 }
 
