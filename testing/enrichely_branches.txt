@@ -1,0 +1,165 @@
+# Enrichely ICP — allabolag branch keywords
+# Filtered from allabolag.se's 713-branch index. Targets physical-goods
+# retail, e-commerce, wholesale (partihandel), and specialty consumer
+# verticals. Excludes pure services, consultancies, finance, fastighet,
+# construction trades, transport/logistics, government, manufacturing-
+# only (*-tillverkning / *-produktion / *-Komponenter).
+#
+# Pass to source_candidates_allabolag.js via --keywords (comma-separated)
+# or paste into DEFAULT_BRANCH_KEYWORDS.
+
+# --- Tier 1: Core e-commerce / general retail ---
+Postorder/e-handel
+E-handel
+E-handel - Program, system
+Detaljhandel
+Detaljhandel - annat
+Butikshandel
+Butikshandel -övrigt
+Torghandel
+Auktioner
+
+# --- Tier 2: Fashion / apparel / accessories ---
+Kläder
+Kläder, skor
+Damkläder
+Konfektion
+Profilkläder
+Skor
+Skor - detaljister
+Pälsvaror
+Skinn, läder och pälsvaror
+Läder, skor, inredning, reseeffekter och textilier
+Reseeffekter
+Textilier
+Bijouteri
+Smycken, accessoarer
+Guld, silver, ädelstenar
+Guldsmeder
+Klockor, ur
+Mynt och medaljer
+
+# --- Tier 3: Beauty / health / wellness ---
+Kosmetik, parfym och frisörartiklar
+Kosmetika, hygienartiklar
+Hudvårdsprodukter
+Hälsokost, naturläkemedel
+Optik och optisk utrustning
+Apoteksvaror, läkemedel - Distribution
+Apoteksvaror, läkemedel - Partihandel
+Sjukvårdsartiklar
+
+# --- Tier 4: Home / furniture / interior ---
+Möbler
+Möbler, inredning, kök- och belysningsutrustning
+Inredningar
+Inredning - Offentlig miljö
+Köksinredningar
+Köksinredningar - agentur och grossist
+Hushållsutrustningar, vitvaror
+Hushållsutrustningar, vitvaror - grossister
+Mattor
+Tapeter
+Färger, lacker, tapeter
+Persienner, gardiner
+Markiser
+Solskydd
+Belysningsarmatur
+Kakel, klinker
+Golvbeläggningar
+Glas, glasvaror
+Konst
+Konst och galleriverksamhet
+Antikviteter
+Presentartiklar
+Presentreklam, reklamartiklar
+
+# --- Tier 5: Electronics / tech retail ---
+Datorer
+Datorer - Persondatorer
+Datorer - Kringutrustningar
+Hushållsmaskiner och apparater, radio, tv, cd och musikinstrument
+Mobiltelefoner
+Radio TV, video
+Fotoutrustningar
+Videokameror, filmkameror
+Ljudanläggningar, ljusanläggningar, bildanläggningar
+Musikinstrument
+Musik
+Data - Programvaror
+Data- och TV-spel
+
+# --- Tier 6: Sports / hobby / outdoors / toys ---
+Sport
+Sport - grossist
+Sportanläggningar
+Golfutrustningar
+Fritidsbåtar och utrustning
+Båtar, båtmotorer
+Båttillbehör, båtutrustningar
+Cyklar
+Fiskeredskap
+Jakt, vilt och naturvård
+Hästsportartiklar
+Leksaker, hobbyartiklar
+Spel, nöjesanläggningsutrustningar
+
+# --- Tier 7: Food, drink, specialty consumables ---
+Livsmedel
+Livsmedel - agenturer och grossister
+Bryggeriprodukter
+Dryckesvaror
+Dryckesvaror - grossist
+Vinagenturer, spritagenturer
+Mineralvatten
+Mejerivaror
+Konfektyrer, Choklad,
+Glass
+Frukt, bär och grönsaker - grossister
+Fisk, skaldjur
+Kaffe och te - agenturer
+Tobak
+Bagerier - Brödindustri
+
+# --- Tier 8: Pet / garden / outdoor lifestyle ---
+Djurartiklar, djurfoder
+Blommor, växter och tillbehör
+Trädgårdsmaskiner, trädgårdsredskap
+Trädgårdsanläggningar
+Trädgårdsväxter, plantskolor
+Fodermedel
+
+# --- Tier 9: Auto / motor consumer goods (B2C aftermarket) ---
+Bilar
+Bilreservdelar
+Biltillbehör
+Däck
+MC, mopeder, skotrar
+Motorcykel, ATV och mopeder - detaljister
+Husvagnar, husbilar
+
+# --- Tier 10: Wholesale / partihandel (mixed-goods grossister) ---
+Grossister
+Agenturer
+Agenturhandel-övrig
+Distribution
+Kosmetik - tillverkare och grossister
+Möbler, hushållsartiklar och järnvaror - agentur
+Jordbruksprodukter, textilråvaror och djur - agentur
+Insatsvaror - grossister
+
+# --- Tier 11: Specialty / niche consumer ---
+Böcker, papper, tidningar och reklamblad
+Bokförlag
+Kontorsmateriel
+Förpackningar - Handel, konsument, kontor
+Skyltar, skyltställ
+Säljbolag
+Verktyg och redskap
+Verktyg - Handverktyg
+Verktyg - Elverktyg
+Lås
+Brandredskap, brandskydd
+Vapen
+Tandtekniska arbeten
+Hushållsnära tjänster
