@@ -16,7 +16,12 @@
         "source-candidates": "node src/source_candidates_allabolag.js",
         "resolve-websites": "node src/resolve_websites.js",
         "resolve-websites:retry": "node src/resolve_websites.js --retry-not-found true --delayMs 2500",
-        "enrich-score": "node src/enrich_and_score_leads.js"
+        "enrich-score": "node src/enrich_and_score_leads.js",
+        "build-backbone": "node src/build_backbone.js",
+        "filter-backbone": "node src/filter_backbone.js",
+        "run-batches": "node src/run_batches.js",
+        "track": "node src/track_progress.js",
+        "track:watch": "node src/track_progress.js --watch 15"
     },
     "keywords": [],
     "author": "",

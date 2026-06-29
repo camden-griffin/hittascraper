@@ -53,11 +53,19 @@ const RETRY_NOT_FOUND =
     argv["retry-not-found"] === true ||
     String(argv["retry-not-found"] || argv.retryNotFound || "").toLowerCase() ===
         "true";
+// --backfill-contacts: revisit already-resolved rows to fill email/phone from
+// hitta (rows with a website but no email yet).
+const BACKFILL_CONTACTS =
+    argv["backfill-contacts"] === true ||
+    String(argv["backfill-contacts"] || argv.backfillContacts || "").toLowerCase() ===
+        "true";
 
 const RESOLVE_COLUMNS = [
     "target_url",
-    "target_url_source", // hitta_orgnr | hitta_name | ddg | google | already_present | not_found
+    "target_url_source", // hitta_orgnr | hitta_name | hitta_contact_only | already_present | not_found
     "target_url_confidence", // high | medium | low
+    "email", // email scraped from the hitta company page (orgno-scoped)
+    "phone", // phone scraped from the hitta company page (orgno-scoped)
     "resolve_debug",
 ];
 
@@ -154,7 +162,7 @@ function parseHittaNextData(html) {
 // silently picked sibling-company websites and confidently mislabeled
 // them as the target's site.
 function extractHomepageFromHittaCompanyHtml(html, { expectedOrgnr, expectedName }) {
-    const out = { url: "", matchedOrgnr: false, debug: [] };
+    const out = { url: "", email: "", phone: "", matchedOrgnr: false, debug: [] };
     if (!html) return out;
 
     const orgnrDigits = (expectedOrgnr || "").replace(/\D/g, "");
@@ -214,6 +222,23 @@ function extractHomepageFromHittaCompanyHtml(html, { expectedOrgnr, expectedName
         out.debug.push("no_url_in_segment");
     }
 
+    // Within OUR segment only, also pull email + phone (hitta embeds both in
+    // the same escaped-JSON company block as the Url link). Scoping to the
+    // matched orgno segment avoids grabbing a sibling company's contact info.
+    const emailMatch = segment.match(
+        /([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-z]{2,})/,
+    );
+    if (emailMatch && !/hitta\.se|sentry|w3\.org|example|@2x|\.(png|jpg|svg)/i.test(emailMatch[1])) {
+        out.email = emailMatch[1];
+        out.debug.push("email_in_segment");
+    }
+    // Phone: hitta uses "telephone":"+46..." (single) inside the block.
+    const phoneMatch = segment.match(/\\"telephone\\":\\"(\+?[\d ]{6,})\\"/);
+    if (phoneMatch) {
+        out.phone = phoneMatch[1].trim();
+        out.debug.push("phone_in_segment");
+    }
+
     return out;
 }
 
@@ -238,6 +263,8 @@ async function hittaLookup(query, { expectedOrgnr, expectedName }) {
     if (direct.url) {
         return {
             url: direct.url,
+            email: direct.email,
+            phone: direct.phone,
             confidence: direct.matchedOrgnr ? "high" : "medium",
             debug: ["hitta_direct", ...direct.debug],
         };
@@ -278,6 +305,8 @@ async function hittaLookup(query, { expectedOrgnr, expectedName }) {
         if (found.url) {
             return {
                 url: found.url,
+                email: found.email,
+                phone: found.phone,
                 confidence: found.matchedOrgnr ? "high" : "medium",
                 debug: ["hitta_detail", page, ...found.debug],
             };
@@ -558,6 +587,11 @@ async function resolveRow(row) {
     const name = row.company_name || row.legal_name || "";
 
     const debug = [];
+    // Contact info (email/phone) is collected from the same hitta page as the
+    // website — keep the best seen even if the URL itself is missing, so a
+    // company with a hitta email but no listed website still yields contacts.
+    let email = "";
+    let phone = "";
 
     // 1. hitta by orgnr
     if (orgnr.length === 10) {
@@ -566,99 +600,54 @@ async function resolveRow(row) {
             expectedName: name,
         });
         debug.push(...r.debug.map((d) => `hitta_orgnr:${d}`));
+        if (r.email && !email) email = r.email;
+        if (r.phone && !phone) phone = r.phone;
         if (r.url) {
             return {
                 url: r.url,
                 source: "hitta_orgnr",
                 confidence: r.confidence,
+                email,
+                phone,
                 debug,
             };
         }
         await delay(REQUEST_DELAY_MS);
     }
 
-    // 2. hitta by name
+    // 2. hitta by name (fallback when orgnr search misses)
     if (name) {
         const r = await hittaLookup(name, {
             expectedOrgnr: orgnr,
             expectedName: name,
         });
         debug.push(...r.debug.map((d) => `hitta_name:${d}`));
+        if (r.email && !email) email = r.email;
+        if (r.phone && !phone) phone = r.phone;
         if (r.url) {
             return {
                 url: r.url,
                 source: "hitta_name",
                 confidence: r.confidence,
-                debug,
-            };
-        }
-        await delay(REQUEST_DELAY_MS);
-    }
-
-    // 3. Mojeek fallback (primary search-engine backend)
-    if (name) {
-        const q = `${name} hemsida`;
-        const r = await mojeekSearch(q, { expectedName: name });
-        debug.push(...r.debug);
-        if (r.url) {
-            return {
-                url: r.url,
-                source: "mojeek",
-                confidence: r.confidence,
-                debug,
-            };
-        }
-        await delay(REQUEST_DELAY_MS);
-    }
-
-    // 4. Brave Search fallback (secondary search-engine backend)
-    if (name) {
-        const q = `${name} hemsida`;
-        const r = await braveSearch(q, { expectedName: name });
-        debug.push(...r.debug);
-        if (r.url) {
-            return {
-                url: r.url,
-                source: "brave",
-                confidence: r.confidence,
-                debug,
-            };
-        }
-        await delay(REQUEST_DELAY_MS);
-    }
-
-    // 5. DDG fallback (tertiary; often 403s but worth trying)
-    if (name) {
-        const q = `${name} hemsida`;
-        const r = await ddgSearch(q, { expectedName: name });
-        debug.push(...r.debug);
-        if (r.url) {
-            return {
-                url: r.url,
-                source: "ddg",
-                confidence: r.confidence,
-                debug,
-            };
-        }
-        await delay(REQUEST_DELAY_MS);
-    }
-
-    // 6. Google (opt-in)
-    if (USE_GOOGLE && name) {
-        const q = `${name} hemsida`;
-        const r = await googleSearch(q, { expectedName: name });
-        debug.push(...r.debug);
-        if (r.url) {
-            return {
-                url: r.url,
-                source: "google",
-                confidence: r.confidence,
+                email,
+                phone,
                 debug,
             };
         }
     }
 
-    return { url: "", source: "not_found", confidence: "", debug };
+    // Search-engine fallbacks (Mojeek/Brave/DDG/Google) removed 2026-06-22:
+    // slow, rate-limited/403-prone, and low-confidence. hitta-by-orgnr/name is
+    // the fast, verified path; if hitta has no website, we mark not_found —
+    // but still return any email/phone we picked up along the way.
+    return {
+        url: "",
+        source: email || phone ? "hitta_contact_only" : "not_found",
+        confidence: "",
+        email,
+        phone,
+        debug,
+    };
 }
 
 // ---- Main ----
@@ -691,6 +680,9 @@ async function resolveRow(row) {
             (r.target_url && r.target_url.trim()) ||
             (r.homepage_from_allabolag && r.homepage_from_allabolag.trim());
         if (FORCE) return true;
+        // --backfill-contacts: revisit rows that have no email yet so we can
+        // fill email/phone from hitta on previously-resolved batches.
+        if (BACKFILL_CONTACTS) return !(r.email || "").trim();
         if (RETRY_NOT_FOUND)
             return (
                 !has ||
@@ -751,10 +743,16 @@ async function resolveRow(row) {
             row.target_url = r.url || "";
             row.target_url_source = r.source;
             row.target_url_confidence = r.confidence || "";
+            // Don't overwrite an existing email/phone with a blank; keep best.
+            if (r.email && !(row.email || "").trim()) row.email = r.email;
+            if (r.phone && !(row.phone || "").trim()) row.phone = r.phone;
             row.resolve_debug = (r.debug || []).join(" | ");
             if (r.url) {
                 resolved++;
-                console.log(`✓ ${r.url} (${r.source}/${r.confidence})`);
+                const extra = [r.email && "✉", r.phone && "☎"].filter(Boolean).join("");
+                console.log(`✓ ${r.url} (${r.source}/${r.confidence}) ${extra}`);
+            } else if (r.email || r.phone) {
+                console.log(`◐ contact-only ${r.email || ""} ${r.phone || ""}`);
             } else {
                 console.log(`✗ not_found`);
             }

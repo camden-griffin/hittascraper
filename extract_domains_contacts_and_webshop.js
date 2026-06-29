@@ -82,7 +82,12 @@ function loadCsv(filepath) {
 }
 
 function writeCsv(filepath, rows, headers) {
-    const fields = OUTPUT_COLUMNS.slice();
+    // Preserve ALL original input columns (target_url, sni, address, orgnr, …)
+    // and append this extractor's output columns that aren't already present.
+    // Previously this only wrote OUTPUT_COLUMNS, silently dropping the backbone
+    // data and target_url — leaving merge-by-domain as the only recovery path.
+    const fields = (headers && headers.length ? headers.slice() : []);
+    for (const c of OUTPUT_COLUMNS) if (!fields.includes(c)) fields.push(c);
     const normalized = rows.map((r) => {
         const o = {};
         for (const h of fields) o[h] = r[h] ?? "";
@@ -110,9 +115,10 @@ function originKeyFromRow(row, urlColumn) {
 
 function isRowProcessed(row) {
     if (!row) return false;
+    // Only this extractor's OWN output columns mean "processed". company_name
+    // and orgnr are supplied by the registry backbone input, so including them
+    // would make every backbone row look already-done and skip extraction.
     const keys = [
-        "company_name",
-        "orgnr",
         "email",
         "phone",
         "contact_page",
@@ -2340,11 +2346,19 @@ async function extractDomainEnrichment(page, origin) {
         for (const idx of idxs) {
             const row = rows[idx];
 
-            row.domain = getSiteHost(originKey) || "";
-            row.company_name = res.companyName || "";
-            row.orgnr = (res.orgnrs || []).join("; ");
-            row.email = (res.emails || []).join("; ");
-            row.phone = (res.phones || []).join("; ");
+            // Merge, don't clobber: now that input columns (incl. a hitta
+            // email/phone and the backbone company_name) are preserved, only
+            // overwrite when the crawl actually found something. Otherwise a
+            // contactless crawl would wipe good upstream data.
+            row.domain = getSiteHost(originKey) || row.domain || "";
+            const crawledName = res.companyName || "";
+            if (crawledName) row.company_name = crawledName;
+            const crawledOrg = (res.orgnrs || []).join("; ");
+            if (crawledOrg) row.orgnr = crawledOrg;
+            const crawledEmail = (res.emails || []).join("; ");
+            if (crawledEmail) row.email = crawledEmail;
+            const crawledPhone = (res.phones || []).join("; ");
+            if (crawledPhone) row.phone = crawledPhone;
             row.contact_page = res.contactPageUsed || origin;
             row.source = res.method || "not_found";
 
