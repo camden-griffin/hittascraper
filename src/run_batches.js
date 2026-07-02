@@ -131,10 +131,22 @@ function countRows(file) {
         const newRows = countRows(path.join(ROOT, newCsv));
 
         // 3. resolve websites (skip if dedupe left nothing)
+        //
+        // Resolve in place on resolvedCsv so a mid-batch kill/restart resumes:
+        // resolve_websites.js skips rows that already have a target_url and
+        // flushes every 10 rows, so re-running over its own partial output
+        // continues where it stopped. We seed resolvedCsv from newCsv only if
+        // it doesn't already exist (i.e. this is a fresh batch, not a resume).
         if (newRows > 0) {
+            if (!fs.existsSync(path.join(ROOT, resolvedCsv))) {
+                fs.copyFileSync(
+                    path.join(ROOT, newCsv),
+                    path.join(ROOT, resolvedCsv),
+                );
+            }
             const rc = await run("src/resolve_websites.js", [
                 "--input",
-                newCsv,
+                resolvedCsv,
                 "--output",
                 resolvedCsv,
                 "--delayMs",
