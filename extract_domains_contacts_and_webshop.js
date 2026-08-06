@@ -446,6 +446,71 @@ async function fetchStaticWithFallbacks(origin) {
     };
 }
 
+// ---- Static contact-subpage sweep (recall booster, no browser) ----
+// The homepage often has no email; the contact/about page usually does. Rather
+// than escalate straight to the slow Puppeteer path, statically fetch a few of
+// the most likely contact URLs. Static GETs are ~10-50x cheaper than a browser
+// nav, so this lifts email recall while REDUCING how many rows fall through to
+// the browser tier (usually a net speed win, not a cost).
+//
+// Ordered by hit-likelihood on Swedish sites; we stop early on the first page
+// that yields an email. Kept small + parallel-batched so worst case is a
+// couple of extra fast fetches.
+const STATIC_CONTACT_PATHS = [
+    "/kontakt",
+    "/kontakta-oss",
+    "/kontakta",
+    "/contact",
+    "/om-oss",
+    "/about",
+    "/kontakt-oss",
+    "/contact-us",
+];
+
+async function fetchContactSubpagesStatic(
+    baseOrigin,
+    { maxPages = 4, perFetchTimeout = 8000 } = {},
+) {
+    // baseOrigin is the final origin that worked for the homepage.
+    let base;
+    try {
+        base = new URL(baseOrigin).origin;
+    } catch {
+        return [];
+    }
+
+    const urls = STATIC_CONTACT_PATHS.slice(0, maxPages).map((p) => base + p);
+    const out = [];
+
+    // Fetch in small parallel batches; bail as soon as one has an email so we
+    // don't keep fetching unnecessarily.
+    const BATCH = 2;
+    for (let i = 0; i < urls.length; i += BATCH) {
+        const batch = urls.slice(i, i + BATCH);
+        const results = await Promise.all(
+            batch.map(async (u) => {
+                try {
+                    const html = await fetchStatic(u, perFetchTimeout, 4);
+                    return { url: u, html };
+                } catch {
+                    return { url: u, html: "" };
+                }
+            }),
+        );
+        let gotEmail = false;
+        for (const r of results) {
+            if (!r.html) continue;
+            out.push(r);
+            const quick = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(
+                normalizeEmailText(r.html),
+            );
+            if (quick) gotEmail = true;
+        }
+        if (gotEmail) break;
+    }
+    return out;
+}
+
 // ---- Extractors: phones ----
 function extractPhones(text) {
     if (!text) return [];
@@ -1621,6 +1686,45 @@ async function extractStatic(origin) {
         phones.push(...extractPhones(text));
         if (phones.length) sources.push("phone_static");
 
+        // RECALL BOOSTER: homepage had no email → statically sweep the likely
+        // contact/about subpages before we consider the slow browser path.
+        // Cheap fast fetches; ranks against the SAME origin so domain-match
+        // scoring still applies. Also opportunistically grabs a phone/orgnr.
+        if (rankedEmails.length === 0) {
+            let subpages = [];
+            try {
+                subpages = await fetchContactSubpagesStatic(contactPageUsed);
+            } catch {}
+            for (const sp of subpages) {
+                if (!sp.html) continue;
+                const spClean = sp.html
+                    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
+                    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ");
+                const spText = he.decode(
+                    spClean.replace(/<[^>]*>/g, " ").replace(/\s+/g, " "),
+                );
+                const spEmails = extractEmailsWithContext({
+                    html: sp.html,
+                    text: spText,
+                    origin: contactPageUsed,
+                });
+                if (spEmails.length) {
+                    emails.push(...spEmails);
+                    sources.push("email_static_subpage");
+                    // Prefer showing the subpage where contact info was found.
+                    contactPageUsed = sp.url;
+                }
+                if (phones.length === 0) {
+                    const spPhones = extractPhones(spText);
+                    if (spPhones.length) {
+                        phones.push(...spPhones);
+                        sources.push("phone_static_subpage");
+                    }
+                }
+                if (emails.length) break; // enough — stop scanning subpages
+            }
+        }
+
         // STRICT orgnr: body lower score
         pushOrgnrCandidates(
             orgBucket,
@@ -2389,6 +2493,12 @@ async function extractDomainEnrichment(page, origin) {
             }
             if ((res.sources || []).includes("parked_domain_detected")) {
                 debugBits.push("parked_domain_detected");
+            }
+            // Surface the detailed extraction sources (incl. which tier found
+            // the email: email_static_ranked | email_static_subpage | browser)
+            // so recall attribution is visible in the output, not discarded.
+            if ((res.sources || []).length) {
+                debugBits.push(`src:${res.sources.join(",")}`);
             }
             row.debug = debugBits.join(" | ");
         }
